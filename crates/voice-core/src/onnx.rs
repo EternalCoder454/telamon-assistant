@@ -12,10 +12,11 @@ fn init() -> Result<()> {
     INIT.get_or_init(|| {
         let path = std::env::var("ORT_DYLIB_PATH")
             .unwrap_or_else(|_| "libonnxruntime.so.1".to_string());
-        ort::init_from(&path)
-            .map_err(|e| format!("cannot load ONNX Runtime ({path}): {e}"))?
-            .with_name("telamon")
-            .commit();
+        if !path.contains('/') && !Path::new("/usr/lib64").join(&path).exists() {
+            return Err(format!("ONNX Runtime ({path}) is not installed"));
+        }
+        // Loading happens with the first session, whose error names it.
+        let _ = ort::init_from(&path).with_name("telamon").commit();
         Ok(())
     })
     .clone()

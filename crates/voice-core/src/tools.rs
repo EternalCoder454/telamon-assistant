@@ -252,6 +252,7 @@ fn system_stats() -> Value {
         .unwrap_or(0.0);
     let load: Vec<String> = read("/proc/loadavg").split_whitespace().take(3).map(String::from).collect();
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    let disks: Vec<Value> = [disk("/"), disk(&home)].into_iter().flatten().collect();
     json!({
         "cpu_percent": (cpu * 10.0).round() / 10.0,
         "cpu_temperature_c": cpu_temp(),
@@ -259,7 +260,7 @@ fn system_stats() -> Value {
         "load_average": load.join(" "),
         "memory_used_gib": gib(total - available),
         "memory_total_gib": gib(total),
-        "disks": [disk("/"), disk(&home)].into_iter().flatten().collect::<Vec<_>>(),
+        "disks": disks,
         "gpus": gpus(),
         "uptime_hours": (uptime / 360.0).round() / 10.0,
     })

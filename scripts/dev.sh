@@ -23,11 +23,13 @@ mkdir -p "$TMPDIR"
 # onnxruntime: the wake word, VAD and Kokoro. espeak-ng: Kokoro's phonemes
 # (run as a program). clang and Vulkan: whisper-rs builds whisper.cpp with
 # Vulkan. layer-shell-qt: the glow above every window on Wayland.
+# clang20-libs: whisper-rs-sys' bindgen 0.71 makes opaque structs with
+# libclang 22, so it gets libclang 20 (LIBCLANG_PATH below).
 # pipewire-utils: pw-record and pw-play. telamon-llama comes from
 # $DEV_LLAMA_RPM when given (Telamon Gates' packaging).
 deps="onnxruntime onnxruntime-devel espeak-ng clang-devel cmake ninja-build
 vulkan-headers vulkan-loader-devel glslc mesa-vulkan-drivers layer-shell-qt
-layer-shell-qt-devel pipewire-utils python3"
+layer-shell-qt-devel pipewire-utils python3 clang20-libs"
 deps=$(echo $deps)
 # By default the RPM staged in the build cache, if any.
 DEV_LLAMA_RPM=${DEV_LLAMA_RPM:-$(ls "$work"/llama/telamon-llama-*.rpm 2>/dev/null | head -n1)}
@@ -71,6 +73,7 @@ exec podman run --rm --init "${tty[@]}" --security-opt label=disable \
     -v telamon-assistant-ccache:/root/.cache/ccache \
     -e CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/work/target}" \
     -e QMAKE=/usr/bin/qmake6 \
+    -e LIBCLANG_PATH=/usr/lib64/llvm20/lib64 \
     "${extra[@]}" \
     "$image" bash -c '
         if command -v ccache >/dev/null; then

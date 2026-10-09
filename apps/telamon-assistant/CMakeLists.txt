@@ -18,6 +18,10 @@ find_package(KF6WindowSystem REQUIRED)
 find_package(Corrosion REQUIRED)
 # The weather tool's HTTPS (voice-core, through ureq).
 find_package(OpenSSL REQUIRED)
+# whisper.cpp's GPU backend and CPU threads (built into the Rust library by
+# whisper-rs; its link flags don't reach this link through Corrosion).
+find_package(Vulkan REQUIRED)
+find_package(OpenMP REQUIRED)
 
 set(WORKSPACE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
@@ -48,7 +52,8 @@ target_link_libraries(telamon-assistant-app PRIVATE
     telamon_assistant
     Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Widgets
     KF6::DBusAddons KF6::WindowSystem
-    OpenSSL::SSL OpenSSL::Crypto)
+    OpenSSL::SSL OpenSSL::Crypto
+    Vulkan::Vulkan OpenMP::OpenMP_CXX)
 
 install(TARGETS telamon-assistant-app RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES data/net.eterneon.telamon.assistant.desktop
