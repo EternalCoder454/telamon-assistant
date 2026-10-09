@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use std::io::{Read, Write};
+use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -113,36 +114,57 @@ pub struct PipeWireSource {
     out: ChildStdout,
     slot: MicSlot,
     stop: Arc<AtomicBool>,
+    program: std::path::PathBuf,
 }
 
 impl PipeWireSource {
     pub fn open(stop: Arc<AtomicBool>, slot: MicSlot) -> Result<Self> {
-        let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
-        if stop.load(Ordering::Relaxed) {
-            return Err(anyhow!("Telamon was turned off"));
-        }
-        let mut child = Command::new("pw-record")
-            .args([
-                "--raw",
-                "--rate",
-                "16000",
-                "--channels",
-                "1",
-                "--format",
-                "s16",
-                "--media-role",
-                "Communication",
-                "-",
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .context("cannot run pw-record (install pipewire-utils)")?;
-        let out = child.stdout.take().context("pw-record")?;
-        *guard = Some(child);
-        drop(guard);
-        Ok(Self { out, slot, stop })
+        Self::open_with("pw-record".into(), stop, slot)
     }
+
+    /// `program` instead of pw-record (the tests' fake).
+    fn open_with(
+        program: std::path::PathBuf,
+        stop: Arc<AtomicBool>,
+        slot: MicSlot,
+    ) -> Result<Self> {
+        let out = spawn_mic(&program, &stop, &slot)?;
+        Ok(Self {
+            out,
+            slot,
+            stop,
+            program,
+        })
+    }
+}
+
+/// Starts the recorder into `slot`, unless `stop` is set (checked under the
+/// slot's lock, so a racing [`close_mic`] always wins).
+fn spawn_mic(program: &Path, stop: &AtomicBool, slot: &MicSlot) -> Result<ChildStdout> {
+    let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if stop.load(Ordering::Relaxed) {
+        return Err(anyhow!("Telamon was turned off"));
+    }
+    let mut child = Command::new(program)
+        .args([
+            "--raw",
+            "--rate",
+            "16000",
+            "--channels",
+            "1",
+            "--format",
+            "s16",
+            "--media-role",
+            "Communication",
+            "-",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("cannot run pw-record (install pipewire-utils)")?;
+    let out = child.stdout.take().context("pw-record")?;
+    *guard = Some(child);
+    Ok(out)
 }
 
 impl Source for PipeWireSource {
@@ -162,10 +184,13 @@ impl Source for PipeWireSource {
     }
 
     fn flush(&mut self) {
-        // pw-record's pipe holds what was said meanwhile; restart it.
+        // pw-record's pipe holds what was said meanwhile: a new one, in
+        // place (replacing `self` would run Drop, which kills the new one).
         close_mic(&self.slot);
-        if let Ok(fresh) = Self::open(self.stop.clone(), self.slot.clone()) {
-            *self = fresh;
+        match spawn_mic(&self.program, &self.stop, &self.slot) {
+            Ok(out) => self.out = out,
+            // The old pipe is at its end, so the next read ends the loop.
+            Err(e) => log::warn!("cannot restart the microphone: {e:#}"),
         }
     }
 }
@@ -282,5 +307,50 @@ impl Sink for WavSink {
         }
         level(0.0);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn alive(slot: &MicSlot) -> bool {
+        let mut guard = slot.lock().unwrap();
+        guard
+            .as_mut()
+            .is_some_and(|c| c.try_wait().unwrap().is_none())
+    }
+
+    #[test]
+    fn the_mic_lives_on_after_a_flush_and_dies_with_the_source() {
+        let dir = std::env::temp_dir().join(format!("telamon-mic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("pw-record");
+        std::fs::write(&fake, "#!/bin/sh\nexec cat /dev/zero\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let slot = MicSlot::default();
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut mic = PipeWireSource::open_with(fake.clone(), stop.clone(), slot.clone()).unwrap();
+        let mut buf = [1i16; 1280];
+        assert!(mic.read(&mut buf).unwrap());
+        assert_eq!(buf[0], 0);
+        mic.flush();
+        assert!(alive(&slot), "flush left no pw-record running");
+        assert!(mic.read(&mut buf).unwrap(), "the mic ended after a flush");
+
+        // Turned off: closed at once, and a flush starts nothing new.
+        stop.store(true, Ordering::Relaxed);
+        close_mic(&slot);
+        mic.flush();
+        assert!(slot.lock().unwrap().is_none());
+        assert!(!mic.read(&mut buf).unwrap());
+
+        stop.store(false, Ordering::Relaxed);
+        let mic = PipeWireSource::open_with(fake, stop, slot.clone()).unwrap();
+        drop(mic);
+        assert!(slot.lock().unwrap().is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

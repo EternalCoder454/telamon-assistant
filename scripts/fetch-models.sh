@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Download the third-party model files Telamon Assistant needs at runtime.
 #
-# Usage: scripts/fetch-models.sh [dest]        (dest defaults to out/models)
+# Usage: scripts/fetch-models.sh [--llm] [dest]  (dest defaults to out/models;
+#        --llm adds the default language model, 2.4 GiB)
 #        scripts/fetch-models.sh --print-hashes [dest]   (maintainers: hash what is downloaded)
 #
 # Every file is pinned by sha256 and verified after download. Files that are
@@ -15,10 +16,17 @@
 set -euo pipefail
 
 print_hashes=0
-if [[ "${1:-}" == "--print-hashes" ]]; then
-    print_hashes=1
+llm=0
+while [[ "${1:-}" == --* ]]; do
+    case $1 in
+        --print-hashes) print_hashes=1 ;;
+        # The language model the app starts its own llama-server with by
+        # default (2.4 GiB). Telamon Gates' copy is the same file.
+        --llm) llm=1 ;;
+        *) echo "unknown option $1" >&2; exit 2 ;;
+    esac
     shift
-fi
+done
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dest="${1:-$root/out/models}"
@@ -44,6 +52,11 @@ FILES=(
     "kokoro-config.json|$KOKORO_HF/config.json|5abb01e2403b072bf03d04fde160443e209d7a0dad49a423be15196b9b43c17f"
     "ggml-base.en.bin|$WHISPER/ggml-base.en.bin|a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002"
 )
+# Qwen3-4B-Instruct-2507 Q4_K_M (Apache-2.0), unsloth's GGUF pinned by commit.
+QWEN=https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9
+if [ "$llm" = 1 ]; then
+    FILES+=("Qwen3-4B-Instruct-2507-Q4_K_M.gguf|$QWEN/Qwen3-4B-Instruct-2507-Q4_K_M.gguf|3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597")
+fi
 
 sha_of() { sha256sum "$1" | cut -d' ' -f1; }
 

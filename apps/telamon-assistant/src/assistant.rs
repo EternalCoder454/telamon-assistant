@@ -79,6 +79,8 @@ pub struct AssistantRust {
     stop: Option<Arc<AtomicBool>>,
     /// The worker's pw-record, for closing the microphone at once.
     mic: audio::MicSlot,
+    /// The worker's own llama-server, for stopping it at once.
+    server: voice_core::server::ServerSlot,
     vram_cap: i32,
     /// A thread waits for graphics memory to free up, then starts Telamon.
     waiting: bool,
@@ -99,6 +101,7 @@ impl Default for AssistantRust {
             error: QString::default(),
             stop: None,
             mic: audio::MicSlot::default(),
+            server: voice_core::server::ServerSlot::default(),
             vram_cap: vram::parse_cap(&settings::options().vram_cap).map_or(0, |c| c as i32),
             waiting: false,
         }
@@ -117,8 +120,10 @@ impl qobject::Assistant {
         if let Some(stop) = self.as_mut().rust_mut().stop.take() {
             stop.store(true, Ordering::Relaxed);
         }
-        // The microphone closes now, not when the worker next looks.
+        // The microphone and our llama-server close now, not when the
+        // worker next looks.
         audio::close_mic(&self.rust().mic);
+        voice_core::server::stop(&self.rust().server);
         self.as_mut().set_enabled(false);
         self.as_mut().set_level(0.0);
         self.set_phase(QString::from("off"));
@@ -155,12 +160,27 @@ impl qobject::Assistant {
         self.as_mut().set_phase(QString::from("loading"));
         let qt = self.qt_thread();
         let mic = self.rust().mic.clone();
+        let server = self.rust().server.clone();
         std::thread::spawn(move || {
             let _one = WORKER.lock().unwrap_or_else(|e| e.into_inner());
             let result = if stop.load(Ordering::Relaxed) {
                 Ok(())
             } else {
-                run(&stop, &mic, cap, &tripped, &qt)
+                // A panic in a model or a tool must not leave the window
+                // saying "listening" forever.
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run(&stop, &mic, &server, cap, &tripped, &qt)
+                }))
+                .unwrap_or_else(|panic| {
+                    let what = panic
+                        .downcast_ref::<&str>()
+                        .map(|s| s.to_string())
+                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                        .unwrap_or_default();
+                    audio::close_mic(&mic);
+                    voice_core::server::stop(&server);
+                    Err(anyhow::anyhow!("Telamon crashed: {what}"))
+                })
             };
             let tripped = tripped.lock().unwrap_or_else(|e| e.into_inner()).take();
             let _ = qt.queue(move |mut a| {
@@ -204,6 +224,10 @@ impl qobject::Assistant {
         let qt = self.qt_thread();
         std::thread::spawn(move || {
             while vram::blocked(cap).is_some() {
+                // Turned off meanwhile: nothing to wait for.
+                if !settings::enabled() {
+                    break;
+                }
                 std::thread::sleep(std::time::Duration::from_secs(2));
             }
             let _ = qt.queue(|mut a| {
@@ -240,6 +264,7 @@ fn data_dir() -> PathBuf {
 fn run(
     stop: &Arc<AtomicBool>,
     mic: &audio::MicSlot,
+    server: &voice_core::server::ServerSlot,
     cap: Option<u32>,
     tripped: &Arc<Mutex<Option<String>>>,
     qt: &cxx_qt::CxxQtThread<qobject::Assistant>,
@@ -258,12 +283,10 @@ fn run(
         .map(PathBuf::from)
         .filter(|h| h.is_absolute() && h != std::path::Path::new("/"))
         .ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
-    let mut assistant = voice_core::Assistant::load(&cfg, home)?;
 
-    // The graphics memory cap, from now on (whisper is on the card): over
-    // it, the microphone closes, our llama-server stops, and the worker
-    // ends, which frees whisper.
-    let server: Arc<Mutex<Option<voice_core::server::Server>>> = Arc::default();
+    // The graphics memory cap, before any model loads: over it, the
+    // microphone closes, our llama-server stops (loading or not), and the
+    // worker ends, which frees whisper.
     let watching = Arc::new(AtomicBool::new(false));
     let _watch = {
         let (stop, mic, server, tripped) =
@@ -273,28 +296,29 @@ fn run(
             *tripped.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
             stop.store(true, Ordering::Relaxed);
             audio::close_mic(&mic);
-            server.lock().unwrap_or_else(|e| e.into_inner()).take();
+            voice_core::server::stop(&server);
         })
     };
     // However this function returns: the watcher stops, and our
-    // llama-server goes now (not when the watcher next wakes), so the next
-    // worker finds port 8091 free.
-    struct Done(
-        Arc<AtomicBool>,
-        Arc<Mutex<Option<voice_core::server::Server>>>,
-    );
+    // llama-server goes now, so the next worker finds port 8091 free.
+    struct Done(Arc<AtomicBool>, voice_core::server::ServerSlot);
     impl Drop for Done {
         fn drop(&mut self) {
             self.0.store(true, Ordering::Relaxed);
-            self.1.lock().unwrap_or_else(|e| e.into_inner()).take();
+            voice_core::server::stop(&self.1);
         }
     }
     let _done = Done(watching, server.clone());
 
-    // Our own llama-server when none answers at the address.
-    let own = if assistant.llm().ready() || !options.llama_url.is_empty() {
-        None
-    } else {
+    let mut assistant = voice_core::Assistant::load(&cfg, home)?;
+    if stop.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+
+    // Our own llama-server when none answers at the address. It goes into
+    // the shared slot as soon as it runs, so Turn Off and the cap reach it
+    // while it loads.
+    if !assistant.llm().ready() && options.llama_url.is_empty() {
         let binary = voice_core::server::find_binary()
             .ok_or_else(|| anyhow::anyhow!("telamon-llama is not installed"))?;
         let model = if options.model.is_empty() {
@@ -303,17 +327,25 @@ fn run(
             PathBuf::from(&options.model)
         };
         std::fs::create_dir_all(data_dir())?;
-        Some(voice_core::server::Server::start(
-            &binary,
-            &model,
-            8091,
-            &data_dir().join("llama-server.log"),
-        )?)
-    };
-    if stop.load(Ordering::Relaxed) {
-        return Ok(());
+        {
+            let mut slot = server.lock().unwrap_or_else(|e| e.into_inner());
+            if stop.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            *slot = Some(voice_core::server::Server::spawn(
+                &binary,
+                &model,
+                8091,
+                &data_dir().join("llama-server.log"),
+            )?);
+        }
+        if let Err(e) = voice_core::server::wait_ready(server, 8091, stop) {
+            if stop.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            return Err(e);
+        }
     }
-    *server.lock().unwrap_or_else(|e| e.into_inner()) = own;
 
     // A test feeds a recording instead of the microphone.
     let mut source: Box<dyn Source> = match std::env::var_os("TELAMON_ASSISTANT_TEST_WAV") {

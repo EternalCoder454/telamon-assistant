@@ -107,8 +107,10 @@ The GUI thread never blocks. One worker thread owns the pipeline: it loads
 the models, reads the microphone, runs every model and plays the answer. A
 second, scoped thread synthesizes the next sentence while one plays. Events
 come back to the QObject through `qt_thread().queue`, and level changes
-under 0.02 are dropped. `disable()` sets an `AtomicBool`, which the worker
-checks at least every 80 ms.
+under 0.02 are dropped. `disable()` sets an `AtomicBool`, kills `pw-record` and Telamon's own
+llama-server (shared slots, even mid-load), and the worker checks the flag at
+least every 80 ms; an in-flight model request is abandoned and no further
+sentence is synthesized or played.
 
 ## Privilege and privacy
 
@@ -149,6 +151,8 @@ checks at least every 80 ms.
 | Nobody speaks after the wake word | After 4 s, it goes back to listening |
 | espeak-ng or pw-play is missing | `error` is set, and the reply text is still shown |
 | `pw-record` ends (PipeWire restarted) | The worker ends, and the phase becomes `off` (restart: Reliable phase) |
+| A panic in the worker | Caught: the mic and llama-server close, `phase = error` ("Telamon crashed: …") |
+| The model sends an empty reply | Telamon says "Sorry, I didn't get an answer." |
 
 ## Performance budget (to measure, then meet in the Performant phase)
 

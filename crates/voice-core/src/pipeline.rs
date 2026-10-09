@@ -121,7 +121,7 @@ impl Assistant {
             on(Event::Woke { score });
             on(Event::Phase(Phase::Awake));
             if let Some((question, ended)) = self.record(source, stop, on)? {
-                self.answer(&question, woke, ended, sink, on);
+                self.answer(&question, woke, ended, sink, stop, on);
             }
             self.wake.reset()?;
             self.vad.reset();
@@ -179,6 +179,7 @@ impl Assistant {
         woke: Instant,
         ended: Instant,
         sink: &mut dyn Sink,
+        stop: &AtomicBool,
         on: &mut dyn FnMut(Event),
     ) {
         on(Event::Phase(Phase::Thinking));
@@ -194,15 +195,17 @@ impl Assistant {
         };
         timing.stt_ms = t.elapsed().as_millis() as u64;
         on(Event::Heard(text.clone()));
-        if text.trim().is_empty() {
+        if text.trim().is_empty() || stop.load(Ordering::Relaxed) {
             return;
         }
         let t = Instant::now();
         let reply = match self
             .llm
-            .ask(&text, &mut |name| on(Event::Tool(name.to_string())))
+            .ask(&text, stop, &mut |name| on(Event::Tool(name.to_string())))
         {
             Ok(a) => a.text,
+            // Turned off: nothing more to say.
+            Err(_) if stop.load(Ordering::Relaxed) => return,
             Err(e) => {
                 on(Event::Error(format!("the model: {e:#}")));
                 "Sorry, I can't reach my language model right now.".to_string()
@@ -220,13 +223,18 @@ impl Assistant {
             let (tx, rx) = mpsc::sync_channel::<Result<Vec<f32>>>(2);
             scope.spawn(move || {
                 for s in &sentences {
-                    if tx.send(tts.speak(s)).is_err() {
+                    if stop.load(Ordering::Relaxed) || tx.send(tts.speak(s)).is_err() {
                         break;
                     }
                 }
             });
             let mut first = true;
             for audio in rx {
+                // Turned off: no more sentences (the synthesizer stops when
+                // this end of its channel goes).
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
                 let audio = match audio {
                     Ok(a) => a,
                     Err(e) => {
