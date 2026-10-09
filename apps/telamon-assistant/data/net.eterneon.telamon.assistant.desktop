@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Telamon
+GenericName=Voice Assistant
+Comment=Ask your computer out loud: "Hey Telamon"
+Exec=telamon-assistant
+Icon=net.eterneon.telamon.assistant
+Terminal=false
+Categories=Qt;KDE;Utility;
+Keywords=voice;assistant;speech;AI;Jarvis;
+StartupNotify=true

@@ -4,3 +4,4 @@
 benchmarks.md
 /.claude/scheduled_tasks.lock
 __pycache__/
+/.claude/worktrees/

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Telamon
+Comment=Listens for "Hey Telamon" when turned on
+Exec=telamon-assistant --background
+Icon=net.eterneon.telamon.assistant
+Terminal=false
+NoDisplay=true
+X-KDE-autostart-phase=2
