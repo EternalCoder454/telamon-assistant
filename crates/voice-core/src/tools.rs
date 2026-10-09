@@ -17,7 +17,11 @@ pub fn definitions() -> Value {
     };
     let none = json!({"type": "object", "properties": {}});
     json!([
-        tool("get_time", "The current local date, time, weekday and time zone.", none.clone()),
+        tool(
+            "get_time",
+            "The current local date, time, weekday and time zone.",
+            none.clone()
+        ),
         tool(
             "get_calendar",
             "Facts about a date: its weekday, how many days away it is, and that month's calendar.",
@@ -41,7 +45,11 @@ pub fn definitions() -> Value {
             "Network interfaces, whether they are up, their addresses and traffic.",
             none.clone()
         ),
-        tool("get_location", "The user's approximate location (city, time zone).", none.clone()),
+        tool(
+            "get_location",
+            "The user's approximate location (city, time zone).",
+            none.clone()
+        ),
         tool(
             "get_weather",
             "Current weather and today's forecast.",
@@ -181,8 +189,10 @@ fn disk(path: &str) -> Option<Value> {
     }
     let total = s.f_blocks * s.f_frsize;
     let free = s.f_bavail * s.f_frsize;
-    Some(json!({"path": path, "total_gib": gib(total), "free_gib": gib(free),
-        "used_percent": if total > 0 { 100 - free * 100 / total } else { 0 }}))
+    Some(
+        json!({"path": path, "total_gib": gib(total), "free_gib": gib(free),
+        "used_percent": (free * 100).checked_div(total).map_or(0, |f| 100 - f)}),
+    )
 }
 
 /// The hottest hwmon temperature of a device folder, in °C.
@@ -191,10 +201,11 @@ fn hwmon_temp(device: &Path) -> Option<f64> {
     for hw in fs::read_dir(device.join("hwmon")).ok()?.flatten() {
         for f in fs::read_dir(hw.path()).ok()?.flatten() {
             let name = f.file_name().to_string_lossy().into_owned();
-            if name.starts_with("temp") && name.ends_with("_input") {
-                if let Ok(milli) = read(f.path()).trim().parse::<f64>() {
-                    best = Some(best.map_or(milli / 1000.0, |b: f64| b.max(milli / 1000.0)));
-                }
+            if name.starts_with("temp")
+                && name.ends_with("_input")
+                && let Ok(milli) = read(f.path()).trim().parse::<f64>()
+            {
+                best = Some(best.map_or(milli / 1000.0, |b: f64| b.max(milli / 1000.0)));
             }
         }
     }
@@ -205,7 +216,10 @@ fn cpu_temp() -> Option<f64> {
     for hw in fs::read_dir("/sys/class/hwmon").ok()?.flatten() {
         let name = read(hw.path().join("name"));
         if matches!(name.trim(), "coretemp" | "k10temp" | "zenpower") {
-            let t = read(hw.path().join("temp1_input")).trim().parse::<f64>().ok()?;
+            let t = read(hw.path().join("temp1_input"))
+                .trim()
+                .parse::<f64>()
+                .ok()?;
             return Some(t / 1000.0);
         }
     }
@@ -214,18 +228,33 @@ fn cpu_temp() -> Option<f64> {
 
 fn gpus() -> Vec<Value> {
     let mut out = Vec::new();
-    let Ok(cards) = fs::read_dir("/sys/class/drm") else { return out };
+    let Ok(cards) = fs::read_dir("/sys/class/drm") else {
+        return out;
+    };
     let mut cards: Vec<_> = cards.flatten().map(|c| c.path()).collect();
     cards.sort();
     for card in cards {
-        let name = card.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let name = card
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
         if !name.starts_with("card") || name.contains('-') {
             continue;
         }
         let dev = card.join("device");
-        let busy = read(dev.join("gpu_busy_percent")).trim().parse::<u64>().ok();
-        let used = read(dev.join("mem_info_vram_used")).trim().parse::<u64>().ok();
-        let total = read(dev.join("mem_info_vram_total")).trim().parse::<u64>().ok();
+        let busy = read(dev.join("gpu_busy_percent"))
+            .trim()
+            .parse::<u64>()
+            .ok();
+        let used = read(dev.join("mem_info_vram_used"))
+            .trim()
+            .parse::<u64>()
+            .ok();
+        let total = read(dev.join("mem_info_vram_total"))
+            .trim()
+            .parse::<u64>()
+            .ok();
         let temp = hwmon_temp(&dev);
         if busy.is_none() && used.is_none() && temp.is_none() {
             continue;
@@ -242,7 +271,11 @@ fn system_stats() -> Value {
     let (b0, t0) = cpu_times();
     std::thread::sleep(Duration::from_millis(250));
     let (b1, t1) = cpu_times();
-    let cpu = if t1 > t0 { (b1 - b0) as f64 * 100.0 / (t1 - t0) as f64 } else { 0.0 };
+    let cpu = if t1 > t0 {
+        (b1 - b0) as f64 * 100.0 / (t1 - t0) as f64
+    } else {
+        0.0
+    };
     let total = meminfo("MemTotal") * 1024;
     let available = meminfo("MemAvailable") * 1024;
     let uptime = read("/proc/uptime")
@@ -250,7 +283,11 @@ fn system_stats() -> Value {
         .next()
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(0.0);
-    let load: Vec<String> = read("/proc/loadavg").split_whitespace().take(3).map(String::from).collect();
+    let load: Vec<String> = read("/proc/loadavg")
+        .split_whitespace()
+        .take(3)
+        .map(String::from)
+        .collect();
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
     let disks: Vec<Value> = [disk("/"), disk(&home)].into_iter().flatten().collect();
     json!({
@@ -275,18 +312,29 @@ struct Proc {
 
 fn procs() -> Vec<Proc> {
     let mut out = Vec::new();
-    let Ok(dir) = fs::read_dir("/proc") else { return out };
+    let Ok(dir) = fs::read_dir("/proc") else {
+        return out;
+    };
     for entry in dir.flatten() {
-        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else { continue };
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
         let stat = read(entry.path().join("stat"));
         // The name is in parentheses and may hold spaces.
-        let (Some(open), Some(close)) = (stat.find('('), stat.rfind(')')) else { continue };
+        let (Some(open), Some(close)) = (stat.find('('), stat.rfind(')')) else {
+            continue;
+        };
         let name = stat[open + 1..close].to_string();
         let rest: Vec<&str> = stat[close + 2..].split_whitespace().collect();
         let field = |i: usize| rest.get(i).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
         // utime and stime are fields 14 and 15 of stat, 11 and 12 here;
         // rss (pages) is 24, 21 here.
-        out.push(Proc { pid, name, ticks: field(11) + field(12), rss: field(21) * 4096 });
+        out.push(Proc {
+            pid,
+            name,
+            ticks: field(11) + field(12),
+            rss: field(21) * 4096,
+        });
     }
     out
 }
@@ -302,13 +350,15 @@ fn processes(by_memory: bool, count: usize) -> Value {
     let mut list: Vec<(Proc, f64)> = procs()
         .into_iter()
         .map(|p| {
-            let used = p.ticks.saturating_sub(before.get(&p.pid).copied().unwrap_or(p.ticks));
+            let used = p
+                .ticks
+                .saturating_sub(before.get(&p.pid).copied().unwrap_or(p.ticks));
             let cpu = used as f64 * 100.0 / total;
             (p, cpu)
         })
         .collect();
     if by_memory {
-        list.sort_by(|a, b| b.0.rss.cmp(&a.0.rss));
+        list.sort_by_key(|p| std::cmp::Reverse(p.0.rss));
     } else {
         list.sort_by(|a, b| b.1.total_cmp(&a.1));
     }
@@ -340,7 +390,9 @@ fn addresses() -> std::collections::HashMap<String, Vec<String>> {
             if ifa.ifa_addr.is_null() {
                 continue;
             }
-            let name = std::ffi::CStr::from_ptr(ifa.ifa_name).to_string_lossy().into_owned();
+            let name = std::ffi::CStr::from_ptr(ifa.ifa_name)
+                .to_string_lossy()
+                .into_owned();
             let addr = match (*ifa.ifa_addr).sa_family as i32 {
                 libc::AF_INET => {
                     let a = &*(ifa.ifa_addr as *const libc::sockaddr_in);
@@ -363,13 +415,20 @@ fn network() -> Value {
     let addrs = addresses();
     let mut interfaces = Vec::new();
     for line in read("/proc/net/dev").lines().skip(2) {
-        let Some((name, rest)) = line.split_once(':') else { continue };
+        let Some((name, rest)) = line.split_once(':') else {
+            continue;
+        };
         let name = name.trim();
         if name == "lo" {
             continue;
         }
-        let f: Vec<u64> = rest.split_whitespace().filter_map(|v| v.parse().ok()).collect();
-        let state = read(format!("/sys/class/net/{name}/operstate")).trim().to_string();
+        let f: Vec<u64> = rest
+            .split_whitespace()
+            .filter_map(|v| v.parse().ok())
+            .collect();
+        let state = read(format!("/sys/class/net/{name}/operstate"))
+            .trim()
+            .to_string();
         interfaces.push(json!({
             "name": name, "state": state,
             "addresses": addrs.get(name).cloned().unwrap_or_default(),
@@ -428,7 +487,8 @@ fn weather(ctx: &Context, asked: Option<&str>) -> Result<Value> {
     let agent = agent();
     let found: Value = agent
         .get("https://geocoding-api.open-meteo.com/v1/search")
-        .query("name", &place)
+        // Open-Meteo matches the name alone: "London, UK" finds nothing.
+        .query("name", place.split(',').next().unwrap_or(&place).trim())
         .query("count", "1")
         .call()?
         .body_mut()
@@ -486,7 +546,10 @@ fn weather_words(code: i64) -> &'static str {
 fn list_files(home: &Path, path: &str, hidden: bool) -> Result<Value> {
     let home = home.canonicalize()?;
     let rel = path.trim().trim_start_matches('~').trim_start_matches('/');
-    let dir = home.join(rel).canonicalize().map_err(|_| anyhow!("there is no folder {rel}"))?;
+    let dir = home
+        .join(rel)
+        .canonicalize()
+        .map_err(|_| anyhow!("there is no folder {rel}"))?;
     if !dir.starts_with(&home) {
         return Err(anyhow!("only folders in the home folder can be listed"));
     }
@@ -506,13 +569,16 @@ fn list_files(home: &Path, path: &str, hidden: bool) -> Result<Value> {
     }
     let total = entries.len();
     // Newest first: "what did I download last" is the common question.
-    entries.sort_by(|a, b| b.3.cmp(&a.3));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.3));
     let shown: Vec<Value> = entries
         .into_iter()
         .take(40)
         .map(|(name, is_dir, size, modified)| {
-            let when = chrono::DateTime::from_timestamp(modified as i64, 0)
-                .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string());
+            let when = chrono::DateTime::from_timestamp(modified as i64, 0).map(|t| {
+                t.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string()
+            });
             if is_dir {
                 json!({"name": name, "kind": "folder", "modified": when})
             } else {
@@ -528,7 +594,10 @@ mod tests {
     use super::*;
 
     fn ctx(home: &Path) -> Context {
-        Context { home: home.to_path_buf(), location: "Paris".into() }
+        Context {
+            home: home.to_path_buf(),
+            location: "Paris".into(),
+        }
     }
 
     #[test]
@@ -558,11 +627,19 @@ mod tests {
         fs::create_dir_all(base.join("secret")).unwrap();
         std::os::unix::fs::symlink(base.join("secret"), home.join("escape")).unwrap();
         let c = ctx(&home);
-        let ok: Value = serde_json::from_str(&call(&c, "list_files", r#"{"path":"Downloads"}"#)).unwrap();
+        let ok: Value =
+            serde_json::from_str(&call(&c, "list_files", r#"{"path":"Downloads"}"#)).unwrap();
         assert_eq!(ok["count"], 1);
-        for bad in [r#"{"path":"../secret"}"#, r#"{"path":"escape"}"#, r#"{"path":"/etc"}"#] {
+        for bad in [
+            r#"{"path":"../secret"}"#,
+            r#"{"path":"escape"}"#,
+            r#"{"path":"/etc"}"#,
+        ] {
             let v: Value = serde_json::from_str(&call(&c, "list_files", bad)).unwrap();
-            assert!(v["error"].is_string() || v["folder"] == "~/etc", "{bad}: {v}");
+            assert!(
+                v["error"].is_string() || v["folder"] == "~/etc",
+                "{bad}: {v}"
+            );
         }
         fs::remove_dir_all(&base).unwrap();
     }

@@ -56,7 +56,9 @@ pub enum Event {
     Phase(Phase),
     /// The loudness (0..1) of whoever speaks, for the glow.
     Level(f32),
-    Woke { score: f32 },
+    Woke {
+        score: f32,
+    },
     Heard(String),
     Tool(String),
     Reply(String),
@@ -76,12 +78,21 @@ pub struct Assistant {
 impl Assistant {
     /// Loads every model (a few seconds, and a few hundred MB).
     pub fn load(cfg: &Config, home: PathBuf) -> Result<Self> {
-        let head = cfg.wake_model.clone().unwrap_or_else(|| cfg.model("telamon.onnx"));
+        let head = cfg
+            .wake_model
+            .clone()
+            .unwrap_or_else(|| cfg.model("telamon.onnx"));
         Ok(Self {
             wake: WakeWord::new(&cfg.models, &head)?,
             vad: Vad::new(&cfg.model("silero_vad.onnx"))?,
             stt: Stt::new(&cfg.model("ggml-base.en.bin"), cfg.stt_gpu)?,
-            llm: Llm::new(&cfg.llama_url, tools::Context { home, location: cfg.location.clone() }),
+            llm: Llm::new(
+                &cfg.llama_url,
+                tools::Context {
+                    home,
+                    location: cfg.location.clone(),
+                },
+            ),
             tts: Tts::new(&cfg.models, &cfg.voice, cfg.speed)?,
             cfg: cfg.clone(),
         })
@@ -187,7 +198,10 @@ impl Assistant {
             return;
         }
         let t = Instant::now();
-        let reply = match self.llm.ask(&text, &mut |name| on(Event::Tool(name.to_string()))) {
+        let reply = match self
+            .llm
+            .ask(&text, &mut |name| on(Event::Tool(name.to_string())))
+        {
             Ok(a) => a.text,
             Err(e) => {
                 on(Event::Error(format!("the model: {e:#}")));

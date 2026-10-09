@@ -35,12 +35,16 @@ impl Vad {
     /// The chance (0..1) that `frame` ([`FRAME`] samples) is speech.
     pub fn speech(&mut self, frame: &[i16]) -> Result<f32> {
         if frame.len() != FRAME {
-            return Err(anyhow!("a VAD frame is {FRAME} samples, not {}", frame.len()));
+            return Err(anyhow!(
+                "a VAD frame is {FRAME} samples, not {}",
+                frame.len()
+            ));
         }
         let mut input = Vec::with_capacity(CONTEXT + FRAME);
         input.extend_from_slice(&self.context);
         input.extend(frame.iter().map(|&s| s as f32 / 32768.0));
-        self.context.copy_from_slice(&input[input.len() - CONTEXT..]);
+        self.context
+            .copy_from_slice(&input[input.len() - CONTEXT..]);
         let outputs = self.session.run(ort::inputs![
             "input" => Tensor::from_array(([1usize, CONTEXT + FRAME], input))?,
             "state" => Tensor::from_array(([2usize, 1, 128], self.state.clone()))?,
@@ -49,6 +53,8 @@ impl Vad {
         let (_, prob) = outputs["output"].try_extract_tensor::<f32>()?;
         let (_, state) = outputs["stateN"].try_extract_tensor::<f32>()?;
         self.state.copy_from_slice(state);
-        prob.first().copied().ok_or_else(|| anyhow!("the VAD gave no value"))
+        prob.first()
+            .copied()
+            .ok_or_else(|| anyhow!("the VAD gave no value"))
     }
 }

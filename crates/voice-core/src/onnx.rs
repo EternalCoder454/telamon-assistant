@@ -10,8 +10,8 @@ static INIT: OnceLock<std::result::Result<(), String>> = OnceLock::new();
 
 fn init() -> Result<()> {
     INIT.get_or_init(|| {
-        let path = std::env::var("ORT_DYLIB_PATH")
-            .unwrap_or_else(|_| "libonnxruntime.so.1".to_string());
+        let path =
+            std::env::var("ORT_DYLIB_PATH").unwrap_or_else(|_| "libonnxruntime.so.1".to_string());
         if !path.contains('/') && !Path::new("/usr/lib64").join(&path).exists() {
             return Err(format!("ONNX Runtime ({path}) is not installed"));
         }

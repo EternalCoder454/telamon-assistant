@@ -51,7 +51,11 @@ impl Server {
             if let Some(status) = server.child.try_wait()? {
                 return Err(anyhow!("llama-server stopped ({status})"));
             }
-            if agent.get(format!("http://127.0.0.1:{port}/health")).call().is_ok() {
+            if agent
+                .get(format!("http://127.0.0.1:{port}/health"))
+                .call()
+                .is_ok()
+            {
                 return Ok(server);
             }
             std::thread::sleep(Duration::from_millis(250));

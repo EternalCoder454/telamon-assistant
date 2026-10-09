@@ -57,14 +57,28 @@ impl Tts {
             .collect();
         let style = load_voice(&models.join("voices-v1.0.bin"), voice)?;
         // Kokoro's voice names start with the accent: b for British.
-        let language = if voice.starts_with('b') { "en-gb" } else { "en-us" };
-        Ok(Self { session, tokens_input, vocab, style, language, speed })
+        let language = if voice.starts_with('b') {
+            "en-gb"
+        } else {
+            "en-us"
+        };
+        Ok(Self {
+            session,
+            tokens_input,
+            vocab,
+            style,
+            language,
+            speed,
+        })
     }
 
     /// The audio (24 kHz mono, -1..1) of one sentence.
     pub fn speak(&mut self, text: &str) -> Result<Vec<f32>> {
         let ipa = phonemize(&for_speech(text), self.language)?;
-        let mut tokens: Vec<i64> = ipa.chars().filter_map(|c| self.vocab.get(&c).copied()).collect();
+        let mut tokens: Vec<i64> = ipa
+            .chars()
+            .filter_map(|c| self.vocab.get(&c).copied())
+            .collect();
         tokens.truncate(MAX_TOKENS);
         if tokens.is_empty() {
             return Ok(Vec::new());
@@ -88,7 +102,26 @@ impl Tts {
 
 /// Words for symbols espeak would read oddly or skip.
 fn for_speech(text: &str) -> String {
-    text.replace("°C", " degrees Celsius")
+    // "8:19" is a time, not a pause: "8 19" reads as "eight nineteen", and
+    // "8:00" as "eight o'clock".
+    let chars: Vec<char> = text.chars().collect();
+    let mut times = String::with_capacity(text.len());
+    for (i, &c) in chars.iter().enumerate() {
+        let digit = |j: usize| chars.get(j).is_some_and(|c| c.is_ascii_digit());
+        if c == ':' && i > 0 && digit(i - 1) && digit(i + 1) && digit(i + 2) {
+            if chars[i + 1] == '0' && chars[i + 2] == '0' {
+                times.push_str(" o'clock");
+            } else {
+                times.push(' ');
+            }
+        } else if times.ends_with(" o'clock") && c == '0' {
+            // The "00" after "o'clock".
+        } else {
+            times.push(c);
+        }
+    }
+    times
+        .replace("°C", " degrees Celsius")
         .replace("°F", " degrees Fahrenheit")
         .replace('°', " degrees")
         .replace('%', " percent")
@@ -140,9 +173,17 @@ fn espeak(text: &str, language: &str) -> Result<String> {
         .stderr(Stdio::null())
         .spawn()
         .context("cannot run espeak-ng (install espeak-ng)")?;
-    child.stdin.take().context("espeak-ng stdin")?.write_all(text.as_bytes())?;
+    child
+        .stdin
+        .take()
+        .context("espeak-ng stdin")?
+        .write_all(text.as_bytes())?;
     let mut ipa = String::new();
-    child.stdout.take().context("espeak-ng stdout")?.read_to_string(&mut ipa)?;
+    child
+        .stdout
+        .take()
+        .context("espeak-ng stdout")?
+        .read_to_string(&mut ipa)?;
     child.wait()?;
     Ok(ipa.split_whitespace().collect::<Vec<_>>().join(" "))
 }
@@ -161,14 +202,7 @@ fn load_voice(path: &Path, voice: &str) -> Result<Vec<[f32; STYLE]>> {
     if data.is_empty() || data.len() % STYLE != 0 {
         return Err(anyhow!("the voice {voice} has {} values", data.len()));
     }
-    Ok(data
-        .chunks_exact(STYLE)
-        .map(|row| {
-            let mut r = [0.0; STYLE];
-            r.copy_from_slice(row);
-            r
-        })
-        .collect())
+    Ok(data.as_chunks::<STYLE>().0.to_vec())
 }
 
 /// The data of a little-endian float32 .npy file.
@@ -178,18 +212,25 @@ fn npy_f32(bytes: &[u8]) -> Result<Vec<f32>> {
     }
     let (len, start) = match bytes[6] {
         1 => (u16::from_le_bytes([bytes[8], bytes[9]]) as usize, 10),
-        _ if bytes.len() >= 12 => {
-            (u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize, 12)
-        }
+        _ if bytes.len() >= 12 => (
+            u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize,
+            12,
+        ),
         _ => return Err(anyhow!("a short .npy file")),
     };
-    let header = std::str::from_utf8(bytes.get(start..start + len).ok_or_else(|| anyhow!("a short .npy header"))?)?;
+    let header = std::str::from_utf8(
+        bytes
+            .get(start..start + len)
+            .ok_or_else(|| anyhow!("a short .npy header"))?,
+    )?;
     if !header.contains("'<f4'") || header.contains("'fortran_order': True") {
         return Err(anyhow!("the voice is not little-endian float32: {header}"));
     }
     Ok(bytes[start + len..]
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
         .collect())
 }
 
@@ -210,6 +251,13 @@ mod tests {
 
     #[test]
     fn says_symbols() {
-        assert_eq!(for_speech("45% at 60°C"), "45 percent at 60 degrees Celsius");
+        assert_eq!(
+            for_speech("45% at 60°C"),
+            "45 percent at 60 degrees Celsius"
+        );
+        assert_eq!(
+            for_speech("It's 8:19 PM, not 9:00."),
+            "It's 8 19 PM, not 9 o'clock."
+        );
     }
 }

@@ -10,7 +10,11 @@ fn file() -> Settings {
 }
 
 fn get(key: &str) -> String {
-    file().get(GROUP, key).unwrap_or_default().trim().to_string()
+    file()
+        .get(GROUP, key)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 pub fn enabled() -> bool {

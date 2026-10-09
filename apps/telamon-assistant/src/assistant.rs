@@ -56,8 +56,8 @@ use core::pin::Pin;
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use voice_core::audio::{self, Source};
 use voice_core::{Event, Phase};
 
@@ -70,7 +70,13 @@ pub struct AssistantRust {
     error: QString,
     /// Set to stop the running worker.
     stop: Option<Arc<AtomicBool>>,
+    /// The worker's pw-record, for closing the microphone at once.
+    mic: audio::MicSlot,
 }
+
+/// Held by the worker for its whole life: a worker started right after
+/// "Turn Off" waits until the previous one (and its llama-server) is gone.
+static WORKER: Mutex<()> = Mutex::new(());
 
 impl Default for AssistantRust {
     fn default() -> Self {
@@ -82,6 +88,7 @@ impl Default for AssistantRust {
             reply: QString::default(),
             error: QString::default(),
             stop: None,
+            mic: audio::MicSlot::default(),
         }
     }
 }
@@ -98,6 +105,8 @@ impl qobject::Assistant {
         if let Some(stop) = self.as_mut().rust_mut().stop.take() {
             stop.store(true, Ordering::Relaxed);
         }
+        // The microphone closes now, not when the worker next looks.
+        audio::close_mic(&self.rust().mic);
         self.as_mut().set_enabled(false);
         self.as_mut().set_level(0.0);
         self.set_phase(QString::from("off"));
@@ -114,8 +123,14 @@ impl qobject::Assistant {
         self.as_mut().set_error(QString::default());
         self.as_mut().set_phase(QString::from("loading"));
         let qt = self.qt_thread();
+        let mic = self.rust().mic.clone();
         std::thread::spawn(move || {
-            let result = run(&stop, &qt);
+            let _one = WORKER.lock().unwrap_or_else(|e| e.into_inner());
+            let result = if stop.load(Ordering::Relaxed) {
+                Ok(())
+            } else {
+                run(&stop, &mic, &qt)
+            };
             let _ = qt.queue(move |mut a| {
                 if stop.load(Ordering::Relaxed) {
                     return;
@@ -126,7 +141,8 @@ impl qobject::Assistant {
                     Ok(()) => a.set_phase(QString::from("off")),
                     Err(e) => {
                         log::warn!("Telamon stopped: {e:#}");
-                        a.as_mut().set_error(QString::from(format!("{e:#}").as_str()));
+                        a.as_mut()
+                            .set_error(QString::from(format!("{e:#}").as_str()));
                         a.set_phase(QString::from("error"));
                     }
                 }
@@ -156,7 +172,11 @@ fn data_dir() -> PathBuf {
         .join("telamon-assistant")
 }
 
-fn run(stop: &Arc<AtomicBool>, qt: &cxx_qt::CxxQtThread<qobject::Assistant>) -> anyhow::Result<()> {
+fn run(
+    stop: &Arc<AtomicBool>,
+    mic: &audio::MicSlot,
+    qt: &cxx_qt::CxxQtThread<qobject::Assistant>,
+) -> anyhow::Result<()> {
     let mut cfg = voice_core::Config::new(models_dir());
     let options = settings::options();
     if !options.llama_url.is_empty() {
@@ -166,7 +186,11 @@ fn run(stop: &Arc<AtomicBool>, qt: &cxx_qt::CxxQtThread<qobject::Assistant>) -> 
         cfg.voice = options.voice.clone();
     }
     cfg.location = options.location.clone();
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| "/".into());
+    // list_files is confined to it: no home, no Telamon.
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|h| h.is_absolute() && h != std::path::Path::new("/"))
+        .ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
     let mut assistant = voice_core::Assistant::load(&cfg, home)?;
 
     // Our own llama-server when none answers at the address.
@@ -181,15 +205,20 @@ fn run(stop: &Arc<AtomicBool>, qt: &cxx_qt::CxxQtThread<qobject::Assistant>) -> 
             PathBuf::from(&options.model)
         };
         std::fs::create_dir_all(data_dir())?;
-        Some(voice_core::server::Server::start(&binary, &model, 8091, &data_dir().join("llama-server.log"))?)
+        Some(voice_core::server::Server::start(
+            &binary,
+            &model,
+            8091,
+            &data_dir().join("llama-server.log"),
+        )?)
     };
 
     // A test feeds a recording instead of the microphone.
     let mut source: Box<dyn Source> = match std::env::var_os("TELAMON_ASSISTANT_TEST_WAV") {
         Some(wav) => Box::new(audio::WavSource::open(std::path::Path::new(&wav), true)?),
-        None => Box::new(audio::PipeWireSource::open(stop.clone())?),
+        None => Box::new(audio::PipeWireSource::open(stop.clone(), mic.clone())?),
     };
-    let mut sink = audio::PipeWireSink;
+    let mut sink = audio::PipeWireSink { stop: stop.clone() };
     let mut last_level = 0.0f32;
     assistant.run(source.as_mut(), &mut sink, stop, &mut |event| {
         if stop.load(Ordering::Relaxed) {

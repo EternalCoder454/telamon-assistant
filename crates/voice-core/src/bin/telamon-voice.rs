@@ -59,7 +59,10 @@ fn main() -> Result<()> {
     let emit = |v: serde_json::Value| println!("{v}");
 
     if scores {
-        let head = cfg.wake_model.clone().unwrap_or_else(|| cfg.model("telamon.onnx"));
+        let head = cfg
+            .wake_model
+            .clone()
+            .unwrap_or_else(|| cfg.model("telamon.onnx"));
         let mut wake = voice_core::wake::WakeWord::new(&cfg.models, &head)?;
         let mut src = audio::WavSource::open(&wav.context("--scores needs --wav")?, false)?;
         let mut chunk = vec![0i16; voice_core::wake::CHUNK];
@@ -107,19 +110,29 @@ fn main() -> Result<()> {
     }
 
     let t = Instant::now();
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| "/".into());
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| "/".into());
     let mut assistant = Assistant::load(&cfg, home)?;
-    emit(json!({"event": "loaded", "ms": t.elapsed().as_millis(), "rss_mb": rss_mb("VmRSS:"),
-        "llama_ready": assistant.llm().ready()}));
+    emit(
+        json!({"event": "loaded", "ms": t.elapsed().as_millis(), "rss_mb": rss_mb("VmRSS:"),
+        "llama_ready": assistant.llm().ready()}),
+    );
 
     let stop = Arc::new(AtomicBool::new(false));
     let mut source: Box<dyn Source> = if mic {
-        Box::new(audio::PipeWireSource::open(stop.clone())?)
+        Box::new(audio::PipeWireSource::open(
+            stop.clone(),
+            Default::default(),
+        )?)
     } else {
-        Box::new(audio::WavSource::open(&wav.clone().context("--wav or --mic")?, realtime)?)
+        Box::new(audio::WavSource::open(
+            &wav.clone().context("--wav or --mic")?,
+            realtime,
+        )?)
     };
     let mut wav_sink = audio::WavSink::new(realtime);
-    let mut pw_sink = audio::PipeWireSink;
+    let mut pw_sink = audio::PipeWireSink { stop: stop.clone() };
     let sink: &mut dyn audio::Sink = if mic { &mut pw_sink } else { &mut wav_sink };
     let start = Instant::now();
     let mut peak_level = 0.0f32;
@@ -141,7 +154,9 @@ fn main() -> Result<()> {
     if let Some(out) = out {
         wav_sink.save(&out)?;
     }
-    emit(json!({"event": "done", "spoken_ms": wav_sink.audio.len() as u64 * 1000 / voice_core::tts::RATE as u64,
-        "peak_level": peak_level, "rss_mb": rss_mb("VmRSS:"), "peak_rss_mb": rss_mb("VmHWM:")}));
+    emit(
+        json!({"event": "done", "spoken_ms": wav_sink.audio.len() as u64 * 1000 / voice_core::tts::RATE as u64,
+        "peak_level": peak_level, "rss_mb": rss_mb("VmRSS:"), "peak_rss_mb": rss_mb("VmHWM:")}),
+    );
     Ok(())
 }

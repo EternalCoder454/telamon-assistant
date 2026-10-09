@@ -14,7 +14,9 @@ impl Stt {
     pub fn new(model: &Path, gpu: bool) -> Result<Self> {
         let mut params = WhisperContextParameters::default();
         params.use_gpu(gpu);
-        let path = model.to_str().ok_or_else(|| anyhow!("the model path is not UTF-8"))?;
+        let path = model
+            .to_str()
+            .ok_or_else(|| anyhow!("the model path is not UTF-8"))?;
         let context = WhisperContext::new_with_params(path, params)
             .with_context(|| format!("cannot load the speech model {}", model.display()))?;
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8)) as i32;
@@ -83,7 +85,10 @@ mod tests {
     fn strips_the_wake_word_and_notes() {
         assert_eq!(clean(" Hey Telamon, what time is it?"), "what time is it?");
         assert_eq!(clean("[BLANK_AUDIO]"), "");
-        assert_eq!(clean("mon. How busy is my CPU? (wind)"), "How busy is my CPU?");
+        assert_eq!(
+            clean("mon. How busy is my CPU? (wind)"),
+            "How busy is my CPU?"
+        );
         assert_eq!(clean("Monday plans"), "Monday plans");
     }
 }

@@ -36,7 +36,11 @@ impl Llm {
             .timeout_global(Some(Duration::from_secs(60)))
             .build()
             .into();
-        Self { url: url.trim_end_matches('/').to_string(), agent, tools }
+        Self {
+            url: url.trim_end_matches('/').to_string(),
+            agent,
+            tools,
+        }
     }
 
     /// Whether llama-server answers its health check.
@@ -75,10 +79,16 @@ impl Llm {
                 .read_json()
                 .context("llama-server's reply")?;
             let message = reply["choices"][0]["message"].clone();
-            let calls = message["tool_calls"].as_array().cloned().unwrap_or_default();
+            let calls = message["tool_calls"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
             if calls.is_empty() {
                 let text = message["content"].as_str().unwrap_or("").to_string();
-                return Ok(Answer { text: spoken(&text), tools: used });
+                return Ok(Answer {
+                    text: spoken(&text),
+                    tools: used,
+                });
             }
             messages.push(json!({
                 "role": "assistant",
@@ -111,7 +121,11 @@ pub fn spoken(text: &str) -> String {
     };
     let mut out = String::with_capacity(text.len());
     for line in text.lines() {
-        let line = line.trim().trim_start_matches(['#', '>', '-', '*']).trim();
+        // Markdown's heading, quote and list marks, not a minus sign.
+        let mut line = line.trim().trim_start_matches(['#', '>']).trim_start();
+        while let Some(rest) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+            line = rest.trim_start();
+        }
         if line.is_empty() {
             continue;
         }
@@ -157,6 +171,7 @@ mod tests {
     fn speaks_plain_text() {
         assert_eq!(spoken("<think>x</think>\n**Hi** there"), "Hi there");
         assert_eq!(spoken("- one\n- two"), "one two");
+        assert_eq!(spoken("-3 degrees outside"), "-3 degrees outside");
     }
 
     #[test]

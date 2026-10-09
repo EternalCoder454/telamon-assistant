@@ -61,7 +61,10 @@ impl WakeWord {
     /// The wake score (0..1) after one chunk of [`CHUNK`] samples.
     pub fn process(&mut self, chunk: &[i16]) -> Result<f32> {
         if chunk.len() != CHUNK {
-            return Err(anyhow!("a wake word chunk is {CHUNK} samples, not {}", chunk.len()));
+            return Err(anyhow!(
+                "a wake word chunk is {CHUNK} samples, not {}",
+                chunk.len()
+            ));
         }
         self.raw.extend(chunk.iter().copied());
         while self.raw.len() > CHUNK + OVERLAP {
@@ -94,14 +97,10 @@ impl WakeWord {
             .run(ort::inputs![Tensor::from_array(([1usize, n], input))?])?;
         let (_, data) = outputs[0].try_extract_tensor::<f32>()?;
         Ok(data
-            .chunks_exact(MELS)
-            .map(|row| {
-                let mut frame = [0.0; MELS];
-                for (f, v) in frame.iter_mut().zip(row) {
-                    *f = v / 10.0 + 2.0;
-                }
-                frame
-            })
+            .as_chunks::<MELS>()
+            .0
+            .iter()
+            .map(|row| row.map(|v| v / 10.0 + 2.0))
             .collect())
     }
 
@@ -122,10 +121,13 @@ impl WakeWord {
 
     fn score(&mut self) -> Result<f32> {
         let input: Vec<f32> = self.embeddings.iter().flatten().copied().collect();
-        let outputs = self
-            .head
-            .run(ort::inputs![Tensor::from_array(([1usize, HEAD, EMBEDDING], input))?])?;
+        let outputs = self.head.run(ort::inputs![Tensor::from_array((
+            [1usize, HEAD, EMBEDDING],
+            input
+        ))?])?;
         let (_, data) = outputs[0].try_extract_tensor::<f32>()?;
-        data.first().copied().ok_or_else(|| anyhow!("the wake model gave no score"))
+        data.first()
+            .copied()
+            .ok_or_else(|| anyhow!("the wake model gave no score"))
     }
 }

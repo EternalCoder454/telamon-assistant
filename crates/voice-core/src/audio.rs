@@ -4,9 +4,9 @@
 
 use anyhow::{Context, Result, anyhow};
 use std::io::{Read, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::Arc;
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The microphone's rate: what the wake word, VAD and whisper take.
@@ -52,13 +52,18 @@ pub struct WavSource {
 
 impl WavSource {
     pub fn open(path: &std::path::Path, realtime: bool) -> Result<Self> {
-        let mut reader = hound::WavReader::open(path).with_context(|| format!("{}", path.display()))?;
+        let mut reader =
+            hound::WavReader::open(path).with_context(|| format!("{}", path.display()))?;
         let spec = reader.spec();
         if spec.sample_rate != MIC_RATE || spec.channels != 1 || spec.bits_per_sample != 16 {
             return Err(anyhow!("{} must be 16 kHz mono 16-bit", path.display()));
         }
         let samples = reader.samples::<i16>().collect::<Result<Vec<_>, _>>()?;
-        Ok(Self { samples, pos: 0, realtime: realtime.then(Instant::now) })
+        Ok(Self {
+            samples,
+            pos: 0,
+            realtime: realtime.then(Instant::now),
+        })
     }
 
     /// Where the file is, in seconds.
@@ -88,21 +93,55 @@ impl Source for WavSource {
     // A file goes on where it was, as a person would keep talking.
 }
 
-/// The microphone through `pw-record`; stops when `stop` is set or dropped.
+/// The running `pw-record`, shared so the GUI thread can close the
+/// microphone at once ([`close_mic`]) while the worker is busy elsewhere.
+pub type MicSlot = Arc<Mutex<Option<Child>>>;
+
+/// Kills the microphone's `pw-record`, if one runs.
+pub fn close_mic(slot: &MicSlot) {
+    let child = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(mut child) = child {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+/// The microphone through `pw-record`. Once `stop` is set no new
+/// `pw-record` starts (checked under the slot's lock, so a racing
+/// [`close_mic`] always wins).
 pub struct PipeWireSource {
-    child: Child,
+    out: ChildStdout,
+    slot: MicSlot,
     stop: Arc<AtomicBool>,
 }
 
 impl PipeWireSource {
-    pub fn open(stop: Arc<AtomicBool>) -> Result<Self> {
-        let child = Command::new("pw-record")
-            .args(["--rate", "16000", "--channels", "1", "--format", "s16", "--media-role", "Communication", "-"])
+    pub fn open(stop: Arc<AtomicBool>, slot: MicSlot) -> Result<Self> {
+        let mut guard = slot.lock().unwrap_or_else(|e| e.into_inner());
+        if stop.load(Ordering::Relaxed) {
+            return Err(anyhow!("Telamon was turned off"));
+        }
+        let mut child = Command::new("pw-record")
+            .args([
+                "--raw",
+                "--rate",
+                "16000",
+                "--channels",
+                "1",
+                "--format",
+                "s16",
+                "--media-role",
+                "Communication",
+                "-",
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .context("cannot run pw-record (install pipewire-utils)")?;
-        Ok(Self { child, stop })
+        let out = child.stdout.take().context("pw-record")?;
+        *guard = Some(child);
+        drop(guard);
+        Ok(Self { out, slot, stop })
     }
 }
 
@@ -111,22 +150,21 @@ impl Source for PipeWireSource {
         if self.stop.load(Ordering::Relaxed) {
             return Ok(false);
         }
-        let out = self.child.stdout.as_mut().context("pw-record")?;
         let mut bytes = vec![0u8; buf.len() * 2];
-        if out.read_exact(&mut bytes).is_err() {
+        // Ends when pw-record is killed (turned off) or PipeWire goes.
+        if self.out.read_exact(&mut bytes).is_err() {
             return Ok(false);
         }
-        for (s, b) in buf.iter_mut().zip(bytes.chunks_exact(2)) {
-            *s = i16::from_le_bytes([b[0], b[1]]);
+        for (s, b) in buf.iter_mut().zip(bytes.as_chunks::<2>().0) {
+            *s = i16::from_le_bytes(*b);
         }
         Ok(!self.stop.load(Ordering::Relaxed))
     }
 
     fn flush(&mut self) {
         // pw-record's pipe holds what was said meanwhile; restart it.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        if let Ok(fresh) = Self::open(self.stop.clone()) {
+        close_mic(&self.slot);
+        if let Ok(fresh) = Self::open(self.stop.clone(), self.slot.clone()) {
             *self = fresh;
         }
     }
@@ -134,33 +172,57 @@ impl Source for PipeWireSource {
 
 impl Drop for PipeWireSource {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        close_mic(&self.slot);
     }
 }
 
 /// Plays through `pw-play`, paced in real time so `level` follows the voice.
-pub struct PipeWireSink;
+pub struct PipeWireSink {
+    /// Set: stop speaking at once.
+    pub stop: Arc<AtomicBool>,
+}
 
 impl Sink for PipeWireSink {
     fn play(&mut self, audio: &[f32], level: &mut dyn FnMut(f32)) -> Result<()> {
         let mut child = Command::new("pw-play")
-            .args(["--rate", "24000", "--channels", "1", "--format", "f32", "--media-role", "Assistant", "-"])
+            .args([
+                "--raw",
+                "--rate",
+                "24000",
+                "--channels",
+                "1",
+                "--format",
+                "f32",
+                "--media-role",
+                "Assistant",
+                "-",
+            ])
             .stdin(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .context("cannot run pw-play (install pipewire-utils)")?;
         let stdin = child.stdin.take().context("pw-play")?;
-        let result = paced(stdin, audio, level);
+        let result = paced(stdin, audio, &self.stop, level);
+        if self.stop.load(Ordering::Relaxed) {
+            let _ = child.kill();
+        }
         let _ = child.wait();
         result
     }
 }
 
-fn paced(mut out: ChildStdin, audio: &[f32], level: &mut dyn FnMut(f32)) -> Result<()> {
+fn paced(
+    mut out: ChildStdin,
+    audio: &[f32],
+    stop: &AtomicBool,
+    level: &mut dyn FnMut(f32),
+) -> Result<()> {
     let step = crate::tts::RATE as usize * 30 / 1000;
     let start = Instant::now();
     for (i, chunk) in audio.chunks(step).enumerate() {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
         let bytes: Vec<u8> = chunk.iter().flat_map(|s| s.to_le_bytes()).collect();
         out.write_all(&bytes)?;
         let due = Duration::from_millis(30 * i as u64);
@@ -184,7 +246,11 @@ pub struct WavSink {
 
 impl WavSink {
     pub fn new(realtime: bool) -> Self {
-        Self { audio: Vec::new(), first: None, realtime }
+        Self {
+            audio: Vec::new(),
+            first: None,
+            realtime,
+        }
     }
 
     pub fn save(&self, path: &std::path::Path) -> Result<()> {
