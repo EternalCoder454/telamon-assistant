@@ -33,7 +33,7 @@ shot() {
 # Gold at the left edge, halfway down: red over green over blue.
 gold() {
     local p r g b
-    p=$(convert "$1" -format '%[fx:int(255*p{2,540}.r)] %[fx:int(255*p{2,540}.g)] %[fx:int(255*p{2,540}.b)]' info:)
+    p=$(magick "$1" -format '%[fx:int(255*p{2,540}.r)] %[fx:int(255*p{2,540}.g)] %[fx:int(255*p{2,540}.b)]' info:)
     read -r r g b <<<"$p"
     [ "$r" -gt 90 ] && [ "$r" -gt "$g" ] && [ "$g" -gt $((b + 20)) ]
 }
@@ -54,7 +54,7 @@ run() {
 
     # 2. On, hearing the clip.
     printf '[Assistant]\nEnabled=true\nServerUrl=http://127.0.0.1:9\nLocation=London\n' \
-        >"$XDG_CONFIG_HOME/assistantrc"
+        >"$XDG_CONFIG_HOME/telamon-assistantrc"
     TELAMON_ASSISTANT_TEST_WAV=$clip "$bin" >"$out/app-on.log" 2>&1 &
     app=$!
     local found=""

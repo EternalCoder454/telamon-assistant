@@ -13,7 +13,7 @@ TelamonWindow {
     // Set from main.cpp through setInitialProperties(); see src/lib.rs.
     required property var assistant
     // Started at login: no window until the user opens Telamon.
-    required property bool background
+    required property bool startHidden
 
     readonly property string phase: root.assistant.phase
     readonly property bool glowing: root.phase === "awake" || root.phase === "thinking" || root.phase === "speaking"
@@ -24,7 +24,7 @@ TelamonWindow {
     height: Kirigami.Units.gridUnit * 30
     minimumWidth: Kirigami.Units.gridUnit * 22
     minimumHeight: Kirigami.Units.gridUnit * 22
-    visible: !root.background
+    visible: !root.startHidden
 
     // Closed while on: Telamon keeps listening. Off: nothing left to do.
     onClosing: {

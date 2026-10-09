@@ -64,4 +64,5 @@ check() {
 check tests/audio/hey-telamon-time.wav get_time '[0-9]|o.clock|morning|afternoon|evening|night'
 check tests/audio/hey-telamon-cpu.wav get_system_stats 'percent|cpu|processor'
 check tests/audio/no-wake.wav - -
+echo "llama-server rss_mb: $(( $(ps -o rss= -p $llama) / 1024 ))"
 [ "$fail" = 0 ] && echo "PASS" || { echo "FAILED"; exit 1; }

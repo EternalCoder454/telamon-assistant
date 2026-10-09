@@ -80,7 +80,7 @@ to it.
 | `heard`, `reply`, `error` | string | The last question, answer and problem |
 | `enable()`, `disable()`, `start()` | invokable | Turn on (saved), turn off (saved, mic closed), start if on |
 
-Settings (`[Assistant]` in the framework's settings file): `Enabled`,
+Settings (`[Assistant]` in `~/.config/telamon-assistantrc`, the framework's settings file): `Enabled`,
 `ServerUrl` (an existing llama-server; empty starts our own on 127.0.0.1:8091),
 `Model` (a GGUF), `Voice` (Kokoro voice), `Location` (the weather's place;
 empty means the time zone's city). Models are read from
