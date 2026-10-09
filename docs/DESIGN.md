@@ -36,7 +36,7 @@ pw-record (16 kHz s16) ──80 ms chunks──▶ wake word ──"Telamon"─�
 | Voice detection | Silero VAD v5 (ONNX, CPU) | Ends the question reliably, even in noise |
 | Speech to text | whisper.cpp `base.en`, through whisper-rs with Vulkan | Fast on the Radeon; falls back to the CPU |
 | Model | telamon-llama's `llama-server` (the one Telamon Gates uses), Qwen3-4B-Instruct-2507 Q4_K_M | Tool calling with `--jinja`. A 4B model answers in well under a second |
-| Speech | Kokoro-82M (ONNX, int8 when present), voice `bm_george` | Apache-2.0 and natural; espeak-ng is run as a program, not linked, because it's GPL |
+| Speech | Kokoro-82M (ONNX fp32; int8 is only ~15 % faster), voice `bm_george` | Apache-2.0 and natural; espeak-ng is run as a program, not linked, because it's GPL |
 | Audio I/O | `pw-record` and `pw-play` (PipeWire) | Nothing is opened until the user turns Telamon on; no audio library is linked |
 
 Moshi and Ollama were looked at and rejected (2026-10-09 research):
@@ -143,7 +143,7 @@ checks at least every 80 ms.
 | End of question to first audio | ≤ 1.5 s | STT + LLM + first sentence's TTS |
 | Wake word to first audio | ≤ question length + 2 s | Includes the 700 ms end-of-speech wait |
 | Idle CPU while listening | ≤ 3 % of one core | wake word every 80 ms |
-| Idle RSS (models loaded) | ≤ 700 MB | whisper base, Kokoro int8, ONNX sessions; llama-server separate |
+| Idle RSS (models loaded) | ≤ 700 MB | whisper base, Kokoro, ONNX sessions; llama-server separate |
 | Glow | drawn only while shown | 30–60 fps while active |
 
 Measured numbers go in `benchmarks.md` (gitignored).

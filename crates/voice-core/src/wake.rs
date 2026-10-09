@@ -19,8 +19,9 @@ const MELS: usize = 32;
 const WINDOW: usize = 76;
 const EMBEDDING: usize = 96;
 const HEAD: usize = 16;
-/// Scores right after a reset mean nothing.
-const WARMUP: usize = 5;
+/// Silent chunks pushed through after a reset, so the buffers hold what
+/// training saw (3.2 s); their scores are dropped.
+const PRIMING: usize = 40;
 
 pub struct WakeWord {
     melspec: Session,
@@ -29,9 +30,6 @@ pub struct WakeWord {
     raw: VecDeque<i16>,
     mel: VecDeque<[f32; MELS]>,
     embeddings: VecDeque<[f32; EMBEDDING]>,
-    /// The embeddings of noise the buffer starts with after a reset.
-    primed: Vec<[f32; EMBEDDING]>,
-    chunks: usize,
 }
 
 impl WakeWord {
@@ -43,22 +41,21 @@ impl WakeWord {
             raw: VecDeque::new(),
             mel: VecDeque::new(),
             embeddings: VecDeque::new(),
-            primed: Vec::new(),
-            chunks: 0,
         };
-        wake.primed = wake.noise_embeddings()?;
-        wake.reset();
+        wake.reset()?;
         Ok(wake)
     }
 
     /// Forgets what was heard, as after a detection.
-    pub fn reset(&mut self) {
+    pub fn reset(&mut self) -> Result<()> {
         self.raw.clear();
         self.mel.clear();
-        self.mel.extend(std::iter::repeat_n([1.0; MELS], WINDOW));
         self.embeddings.clear();
-        self.embeddings.extend(self.primed.iter().copied());
-        self.chunks = 0;
+        let silence = [0i16; CHUNK];
+        for _ in 0..PRIMING {
+            self.process(&silence)?;
+        }
+        Ok(())
     }
 
     /// The wake score (0..1) after one chunk of [`CHUNK`] samples.
@@ -75,14 +72,18 @@ impl WakeWord {
         while self.mel.len() > WINDOW {
             self.mel.pop_front();
         }
+        if self.mel.len() < WINDOW {
+            return Ok(0.0);
+        }
         let embedding = self.embed()?;
         self.embeddings.push_back(embedding);
         while self.embeddings.len() > HEAD {
             self.embeddings.pop_front();
         }
-        self.chunks += 1;
-        let score = self.score()?;
-        Ok(if self.chunks <= WARMUP { 0.0 } else { score })
+        if self.mel.len() < WINDOW || self.embeddings.len() < HEAD {
+            return Ok(0.0);
+        }
+        self.score()
     }
 
     fn mel_frames(&mut self) -> Result<Vec<[f32; MELS]>> {
@@ -126,33 +127,5 @@ impl WakeWord {
             .run(ort::inputs![Tensor::from_array(([1usize, HEAD, EMBEDDING], input))?])?;
         let (_, data) = outputs[0].try_extract_tensor::<f32>()?;
         data.first().copied().ok_or_else(|| anyhow!("the wake model gave no score"))
-    }
-
-    /// openWakeWord starts its embedding buffer from 4 s of quiet noise; so
-    /// does this, with a fixed seed.
-    fn noise_embeddings(&mut self) -> Result<Vec<[f32; EMBEDDING]>> {
-        let mut seed: u32 = 0x5eed;
-        let mut noise = || {
-            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            ((seed >> 16) as i32 % 2000 - 1000) as i16
-        };
-        self.raw.clear();
-        self.mel.clear();
-        self.mel.extend(std::iter::repeat_n([1.0; MELS], WINDOW));
-        let mut out = Vec::new();
-        for _ in 0..(16000 * 4 / CHUNK) {
-            let chunk: Vec<i16> = (0..CHUNK).map(|_| noise()).collect();
-            self.raw.extend(chunk);
-            while self.raw.len() > CHUNK + OVERLAP {
-                self.raw.pop_front();
-            }
-            let frames = self.mel_frames()?;
-            self.mel.extend(frames);
-            while self.mel.len() > WINDOW {
-                self.mel.pop_front();
-            }
-            out.push(self.embed()?);
-        }
-        Ok(out.split_off(out.len().saturating_sub(HEAD)))
     }
 }

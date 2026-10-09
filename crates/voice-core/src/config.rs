@@ -35,7 +35,8 @@ impl Config {
         Self {
             models,
             wake_model: None,
-            wake_threshold: 0.5,
+            // models/telamon.json
+            wake_threshold: 0.9,
             end_silence_ms: 700,
             start_timeout_ms: 4000,
             max_question_ms: 15000,

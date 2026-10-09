@@ -32,7 +32,8 @@ impl Tts {
     /// `models` holds kokoro-v1.0(.int8).onnx, voices-v1.0.bin and
     /// kokoro-config.json.
     pub fn new(models: &Path, voice: &str, speed: f32) -> Result<Self> {
-        let model = ["kokoro-v1.0.int8.onnx", "kokoro-v1.0.onnx"]
+        // fp32 first: int8 is only ~15 % faster (models/README.md).
+        let model = ["kokoro-v1.0.onnx", "kokoro-v1.0.int8.onnx"]
             .iter()
             .map(|m| models.join(m))
             .find(|p| p.exists())
@@ -68,7 +69,8 @@ impl Tts {
         if tokens.is_empty() {
             return Ok(Vec::new());
         }
-        let style = self.style[tokens.len().min(self.style.len() - 1)].to_vec();
+        // Row n-1 for n tokens, as Kokoro's own pipeline does.
+        let style = self.style[(tokens.len() - 1).min(self.style.len() - 1)].to_vec();
         let n = tokens.len();
         let mut padded = Vec::with_capacity(n + 2);
         padded.push(0);

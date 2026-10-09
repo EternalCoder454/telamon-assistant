@@ -112,7 +112,7 @@ impl Assistant {
             if let Some((question, ended)) = self.record(source, stop, on)? {
                 self.answer(&question, woke, ended, sink, on);
             }
-            self.wake.reset();
+            self.wake.reset()?;
             self.vad.reset();
             source.flush();
             on(Event::Level(0.0));
