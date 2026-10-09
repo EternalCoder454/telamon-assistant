@@ -91,6 +91,9 @@ cat <<EOF
 
 Models are in: $dest
 
-Kokoro: two builds were fetched. @KOKORO_ADVICE@
+Kokoro: two builds were fetched.
+  kokoro-v1.0.onnx       fp32, 326 MB  <- recommended at runtime (best quality)
+  kokoro-v1.0.int8.onnx  int8,  92 MB     smaller, ~15% faster on CPU, slightly lower quality;
+                                           the fallback if RAM or load time matters more
 Own wake-word head: models/telamon.onnx in the repo (not downloaded).
 EOF
