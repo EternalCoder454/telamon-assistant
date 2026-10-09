@@ -1,0 +1,22 @@
+# Wake-word training environment: Fedora 44, Python 3.13 (kokoro-onnx needs
+# <3.14), CPU-only torch. Built by scripts/train-wakeword.sh.
+FROM registry.fedoraproject.org/fedora:44
+
+RUN dnf -y install --setopt=install_weak_deps=False \
+        python3.13 espeak-ng libsndfile \
+    && dnf clean all
+
+COPY requirements.txt /tmp/requirements.txt
+RUN python3.13 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/venv/bin/pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cpu torch==2.9.1 \
+    && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Word list for the word-salad negatives (texts.salad_pool).
+RUN dnf -y install --setopt=install_weak_deps=False words && dnf clean all
+
+ENV PATH=/opt/venv/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+WORKDIR /src
