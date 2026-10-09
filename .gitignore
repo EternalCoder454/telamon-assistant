@@ -1,0 +1,6 @@
+/target/
+/build/
+/out/
+benchmarks.md
+/.claude/scheduled_tasks.lock
+__pycache__/
