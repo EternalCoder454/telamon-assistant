@@ -122,6 +122,30 @@ TelamonWindow {
         }
 
         Section {
+            title: qsTr("Safety")
+
+            SectionRow {
+                title: qsTr("Graphics Memory Cap")
+                subtitle: qsTr("Telamon stops its models when the graphics card is this full, and starts again 5 points below. Applies the next time Telamon starts.")
+                leading: [
+                    Symbol {
+                        icon: Symbols.Memory
+                        color: TelamonStyle.accent
+                    }
+                ]
+
+                TelamonComboBox {
+                    readonly property var caps: [0, 85, 90, 95, 98]
+
+                    model: [qsTr("Off"), qsTr("85 %"), qsTr("90 %"), qsTr("95 %"), qsTr("98 %")]
+                    currentIndex: Math.max(0, caps.indexOf(root.assistant.vramCap))
+                    onActivated: index => root.assistant.pickVramCap(caps[index])
+                    Accessible.name: qsTr("Graphics Memory Cap")
+                }
+            }
+        }
+
+        Section {
             title: qsTr("Last Exchange")
             visible: root.assistant.heard.length > 0 || root.assistant.error.length > 0
 

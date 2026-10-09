@@ -87,6 +87,20 @@ empty means the time zone's city). Models are read from
 `$TELAMON_ASSISTANT_MODELS`, else `~/.local/share/telamon-assistant/models`,
 else `/usr/share/telamon-assistant/models` (`scripts/fetch-models.sh`).
 
+## Graphics memory cap
+
+A full graphics card crashed the desktop before, so while Telamon's models run
+(whisper on Vulkan from load, plus Telamon's own llama-server), a watcher
+(`voice-core/src/vram.rs`) reads `/sys/class/drm/card*/device/mem_info_vram_{used,total}`
+every 2 s. The fullest card counts. Two readings in a row at or over the cap
+(`[Assistant] VramCap`: `off`, `85`, `90`, `95` (default) or `98`; the
+Safety section's combo box) stop everything: the microphone closes,
+llama-server is killed, and the worker ends, which frees whisper. The phase
+becomes `error`, with the reason. Telamon doesn't start, and isn't restarted,
+until usage is 5 points under the cap. Then it starts again by itself if
+still on. No readable sysfs means the cap is off. Gates has the same cap
+(`feat/vram-cap`).
+
 ## Threading
 
 The GUI thread never blocks. One worker thread owns the pipeline: it loads

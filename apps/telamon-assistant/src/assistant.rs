@@ -24,6 +24,8 @@ pub mod qobject {
         #[qproperty(QString, reply)]
         /// What went wrong last; empty when nothing did.
         #[qproperty(QString, error)]
+        /// The graphics memory cap in percent; 0 is off.
+        #[qproperty(i32, vram_cap, cxx_name = "vramCap")]
         #[namespace = "telamon_assistant"]
         type Assistant = super::AssistantRust;
     }
@@ -38,6 +40,11 @@ pub mod qobject {
         /// Starts listening when the user turned Telamon on before.
         #[qinvokable]
         fn start(self: Pin<&mut Assistant>);
+        /// Sets the graphics memory cap (0: off; 85, 90, 95 or 98), saved;
+        /// it applies the next time Telamon starts.
+        #[qinvokable]
+        #[cxx_name = "pickVramCap"]
+        fn pick_vram_cap(self: Pin<&mut Assistant>, percent: i32);
     }
 
     impl cxx_qt::Threading for Assistant {}
@@ -59,7 +66,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use voice_core::audio::{self, Source};
-use voice_core::{Event, Phase};
+use voice_core::{Event, Phase, vram};
 
 pub struct AssistantRust {
     enabled: bool,
@@ -72,6 +79,9 @@ pub struct AssistantRust {
     stop: Option<Arc<AtomicBool>>,
     /// The worker's pw-record, for closing the microphone at once.
     mic: audio::MicSlot,
+    vram_cap: i32,
+    /// A thread waits for graphics memory to free up, then starts Telamon.
+    waiting: bool,
 }
 
 /// Held by the worker for its whole life: a worker started right after
@@ -89,6 +99,8 @@ impl Default for AssistantRust {
             error: QString::default(),
             stop: None,
             mic: audio::MicSlot::default(),
+            vram_cap: vram::parse_cap(&settings::options().vram_cap).map_or(0, |c| c as i32),
+            waiting: false,
         }
     }
 }
@@ -112,12 +124,31 @@ impl qobject::Assistant {
         self.set_phase(QString::from("off"));
     }
 
+    pub fn pick_vram_cap(mut self: Pin<&mut Self>, percent: i32) {
+        let value = if percent <= 0 {
+            "off".to_string()
+        } else {
+            percent.to_string()
+        };
+        let cap = vram::parse_cap(&value).map_or(0, |c| c as i32);
+        settings::set_vram_cap(cap);
+        self.as_mut().set_vram_cap(cap);
+    }
+
     pub fn start(mut self: Pin<&mut Self>) {
         let enabled = settings::enabled();
         self.as_mut().set_enabled(enabled);
         if !enabled || self.rust().stop.is_some() {
             return;
         }
+        let cap = vram::parse_cap(&settings::options().vram_cap);
+        if let Some(why) = vram::blocked(cap) {
+            self.as_mut().set_error(QString::from(why.as_str()));
+            self.as_mut().set_phase(QString::from("error"));
+            self.wait_for_vram(cap);
+            return;
+        }
+        let tripped: Arc<Mutex<Option<String>>> = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
         self.as_mut().rust_mut().stop = Some(stop.clone());
         self.as_mut().set_error(QString::default());
@@ -129,9 +160,20 @@ impl qobject::Assistant {
             let result = if stop.load(Ordering::Relaxed) {
                 Ok(())
             } else {
-                run(&stop, &mic, &qt)
+                run(&stop, &mic, cap, &tripped, &qt)
             };
+            let tripped = tripped.lock().unwrap_or_else(|e| e.into_inner()).take();
             let _ = qt.queue(move |mut a| {
+                if let Some(why) = tripped {
+                    // The cap stopped the models: say why, and start again
+                    // once the card has room.
+                    a.as_mut().rust_mut().stop = None;
+                    a.as_mut().set_level(0.0);
+                    a.as_mut().set_error(QString::from(why.as_str()));
+                    a.as_mut().set_phase(QString::from("error"));
+                    a.wait_for_vram(cap);
+                    return;
+                }
                 if stop.load(Ordering::Relaxed) {
                     return;
                 }
@@ -145,6 +187,29 @@ impl qobject::Assistant {
                             .set_error(QString::from(format!("{e:#}").as_str()));
                         a.set_phase(QString::from("error"));
                     }
+                }
+            });
+        });
+    }
+}
+
+impl qobject::Assistant {
+    /// Starts Telamon again when graphics memory is 5 points under the cap,
+    /// if the user still wants it on.
+    fn wait_for_vram(mut self: Pin<&mut Self>, cap: Option<u32>) {
+        if self.rust().waiting {
+            return;
+        }
+        self.as_mut().rust_mut().waiting = true;
+        let qt = self.qt_thread();
+        std::thread::spawn(move || {
+            while vram::blocked(cap).is_some() {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+            let _ = qt.queue(|mut a| {
+                a.as_mut().rust_mut().waiting = false;
+                if *a.enabled() && a.rust().stop.is_none() {
+                    a.start();
                 }
             });
         });
@@ -175,6 +240,8 @@ fn data_dir() -> PathBuf {
 fn run(
     stop: &Arc<AtomicBool>,
     mic: &audio::MicSlot,
+    cap: Option<u32>,
+    tripped: &Arc<Mutex<Option<String>>>,
     qt: &cxx_qt::CxxQtThread<qobject::Assistant>,
 ) -> anyhow::Result<()> {
     let mut cfg = voice_core::Config::new(models_dir());
@@ -193,8 +260,39 @@ fn run(
         .ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
     let mut assistant = voice_core::Assistant::load(&cfg, home)?;
 
+    // The graphics memory cap, from now on (whisper is on the card): over
+    // it, the microphone closes, our llama-server stops, and the worker
+    // ends, which frees whisper.
+    let server: Arc<Mutex<Option<voice_core::server::Server>>> = Arc::default();
+    let watching = Arc::new(AtomicBool::new(false));
+    let _watch = {
+        let (stop, mic, server, tripped) =
+            (stop.clone(), mic.clone(), server.clone(), tripped.clone());
+        vram::watch(cap, watching.clone(), move |why| {
+            log::warn!("{why}");
+            *tripped.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
+            stop.store(true, Ordering::Relaxed);
+            audio::close_mic(&mic);
+            server.lock().unwrap_or_else(|e| e.into_inner()).take();
+        })
+    };
+    // However this function returns: the watcher stops, and our
+    // llama-server goes now (not when the watcher next wakes), so the next
+    // worker finds port 8091 free.
+    struct Done(
+        Arc<AtomicBool>,
+        Arc<Mutex<Option<voice_core::server::Server>>>,
+    );
+    impl Drop for Done {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+            self.1.lock().unwrap_or_else(|e| e.into_inner()).take();
+        }
+    }
+    let _done = Done(watching, server.clone());
+
     // Our own llama-server when none answers at the address.
-    let _server = if assistant.llm().ready() || !options.llama_url.is_empty() {
+    let own = if assistant.llm().ready() || !options.llama_url.is_empty() {
         None
     } else {
         let binary = voice_core::server::find_binary()
@@ -212,6 +310,10 @@ fn run(
             &data_dir().join("llama-server.log"),
         )?)
     };
+    if stop.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+    *server.lock().unwrap_or_else(|e| e.into_inner()) = own;
 
     // A test feeds a recording instead of the microphone.
     let mut source: Box<dyn Source> = match std::env::var_os("TELAMON_ASSISTANT_TEST_WAV") {

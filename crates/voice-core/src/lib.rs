@@ -13,6 +13,7 @@ pub mod stt;
 pub mod tools;
 pub mod tts;
 pub mod vad;
+pub mod vram;
 pub mod wake;
 
 pub use config::Config;

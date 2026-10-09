@@ -34,6 +34,19 @@ pub struct Options {
     pub model: String,
     pub voice: String,
     pub location: String,
+    /// The graphics memory cap: "off", "85", "90", "95" or "98" (default 95).
+    pub vram_cap: String,
+}
+
+pub fn set_vram_cap(percent: i32) {
+    let value = if percent <= 0 {
+        "off".to_string()
+    } else {
+        percent.to_string()
+    };
+    if let Err(e) = file().set(GROUP, "VramCap", Some(&value)) {
+        log::warn!("cannot save the graphics memory cap: {e}");
+    }
 }
 
 pub fn options() -> Options {
@@ -42,5 +55,6 @@ pub fn options() -> Options {
         model: get("Model"),
         voice: get("Voice"),
         location: get("Location"),
+        vram_cap: get("VramCap"),
     }
 }
