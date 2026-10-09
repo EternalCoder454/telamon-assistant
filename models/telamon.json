@@ -1,0 +1,35 @@
+{
+  "threshold": 0.9,
+  "refractory_chunks": 25,
+  "chunk_samples": 1280,
+  "input": {
+    "name": "input",
+    "shape": [
+      1,
+      16,
+      96
+    ],
+    "dtype": "float32"
+  },
+  "output": {
+    "name": "output",
+    "shape": [
+      1,
+      1
+    ],
+    "dtype": "float32"
+  },
+  "eval_synthetic": {
+    "held_out_test_voices": [
+      "af_nova",
+      "am_michael",
+      "bf_emma",
+      "bm_lewis"
+    ],
+    "recall": 0.978125,
+    "false_accepts_per_hour": 2.49691738594328,
+    "negative_hours": 3.6044444444444443,
+    "confusable_utterances_triggered": "26/496",
+    "positive_clips": 960
+  }
+}
