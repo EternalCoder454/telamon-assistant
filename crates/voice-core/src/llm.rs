@@ -4,6 +4,8 @@
 use crate::tools;
 use anyhow::{Context as _, Result, anyhow};
 use serde_json::{Value, json};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::time::Duration;
 
 /// Tool rounds before the model must answer.
@@ -52,7 +54,13 @@ impl Llm {
     }
 
     /// The answer to `question`; `on_tool` hears each tool as it runs.
-    pub fn ask(&self, question: &str, on_tool: &mut dyn FnMut(&str)) -> Result<Answer> {
+    /// Gives up at once (an error) when `stop` is set, even mid-request.
+    pub fn ask(
+        &self,
+        question: &str,
+        stop: &AtomicBool,
+        on_tool: &mut dyn FnMut(&str),
+    ) -> Result<Answer> {
         let mut messages = vec![
             json!({"role": "system", "content": SYSTEM}),
             json!({"role": "user", "content": question}),
@@ -70,25 +78,21 @@ impl Llm {
             if round < MAX_ROUNDS {
                 body["tools"] = tools::definitions();
             }
-            let reply: Value = self
-                .agent
-                .post(format!("{}/v1/chat/completions", self.url))
-                .send_json(&body)
-                .context("llama-server")?
-                .body_mut()
-                .read_json()
-                .context("llama-server's reply")?;
+            if stop.load(Ordering::Relaxed) {
+                return Err(anyhow!("stopped"));
+            }
+            let reply = self.post(body, stop)?;
             let message = reply["choices"][0]["message"].clone();
             let calls = message["tool_calls"]
                 .as_array()
                 .cloned()
                 .unwrap_or_default();
             if calls.is_empty() {
-                let text = message["content"].as_str().unwrap_or("").to_string();
-                return Ok(Answer {
-                    text: spoken(&text),
-                    tools: used,
-                });
+                let mut text = spoken(message["content"].as_str().unwrap_or(""));
+                if text.trim().is_empty() {
+                    text = "Sorry, I didn't get an answer.".to_string();
+                }
+                return Ok(Answer { text, tools: used });
             }
             messages.push(json!({
                 "role": "assistant",
@@ -110,6 +114,40 @@ impl Llm {
             }
         }
         Err(anyhow!("the model kept calling tools"))
+    }
+}
+
+impl Llm {
+    /// One chat completion, on a thread of its own so `stop` can abandon it
+    /// (the thread ends with the request; its answer goes nowhere).
+    fn post(&self, body: Value, stop: &AtomicBool) -> Result<Value> {
+        let (tx, rx) = mpsc::channel();
+        let agent = self.agent.clone();
+        let url = format!("{}/v1/chat/completions", self.url);
+        std::thread::spawn(move || {
+            let reply = agent
+                .post(url)
+                .send_json(&body)
+                .context("llama-server")
+                .and_then(|mut r| {
+                    r.body_mut()
+                        .read_json::<Value>()
+                        .context("llama-server's reply")
+                });
+            let _ = tx.send(reply);
+        });
+        loop {
+            match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(reply) => return reply,
+                Err(mpsc::RecvTimeoutError::Timeout) if stop.load(Ordering::Relaxed) => {
+                    return Err(anyhow!("stopped"));
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(anyhow!("the request thread ended"));
+                }
+            }
+        }
     }
 }
 

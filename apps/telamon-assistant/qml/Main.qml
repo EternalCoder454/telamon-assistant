@@ -183,5 +183,20 @@ TelamonWindow {
                 ]
             }
         }
+
+        Section {
+            title: qsTr("Credits")
+
+            SectionRow {
+                title: qsTr("Built On")
+                subtitle: qsTr("openWakeWord and Google's speech_embedding (feature models, Apache-2.0), Silero VAD (MIT), whisper.cpp and OpenAI Whisper (MIT), llama.cpp (MIT) with Qwen3 (Apache-2.0), Kokoro-82M (Apache-2.0), and espeak-ng (GPL-3.0, run as a separate program).")
+                leading: [
+                    Symbol {
+                        icon: Symbols.Info
+                        color: TelamonStyle.accent
+                    }
+                ]
+            }
+        }
     }
 }

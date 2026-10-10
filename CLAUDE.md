@@ -18,10 +18,16 @@ When in doubt, do what it does.
   `localhost/telamon-gates-dev:44`.
 - **Never run the GUI, the microphone or the speaker on the user's machine.**
   `scripts/smoke.sh` uses Xvfb, a private bus and recorded clips.
-- **Before any GPU or model work**, run
-  `pgrep -af 'cargo |cmake|podman run|llama-server|ollama|whisper'` and
-  `podman ps`, and read `/sys/class/drm/card*/device/mem_info_vram_used`.
-  Wait while another job runs. Stop every model you start.
+- **Never start local AI models from our work** (Zach's standing rule,
+  2026-10-09). He uses Telamon Gates himself and needs the GPU and RAM free.
+  - That means no llama-server, whisper.cpp, Kokoro, ONNX wake word or VAD,
+    and nothing on the GPU, not even in tests.
+  - Test with fakes, the recorded fixtures in `tests/audio`, or stand-in
+    programs (see the fake `pw-record` and `llama-server` tests).
+  - Leave real-model checks to Zach, and say so in every report.
+  - Model-free builds and unit tests are fine, one heavy job at a time,
+    after checking `pgrep -af 'cargo |cmake|podman run|llama-server|whisper'`
+    and `podman ps`.
 - **One heavy job at a time**, capped (`--memory=12g --cpus=12`, 8 jobs;
   `dev.sh` sets this).
 - **Tools only read.** A new tool must never write, run a program the model
@@ -42,6 +48,6 @@ When in doubt, do what it does.
 | Unit tests | `scripts/dev.sh cargo test --workspace` |
 | Lint | `scripts/dev.sh cargo clippy --workspace --all-targets -- -D warnings` |
 | App build | `scripts/dev.sh bash -c 'cmake -S apps/telamon-assistant -B /work/build/dev -G Ninja && cmake --build /work/build/dev'` |
-| Glow smoke (Xvfb) | `scripts/dev.sh scripts/smoke.sh` → `out/smoke/glow.png` |
-| Pipeline test (GPU, real models) | `DEV_GPU=1 DEV_LLM="$HOME/Documents/Projects/AtlasOS/Telamon Gates/out/agent-models" scripts/dev.sh scripts/test-pipeline.sh` (`REALTIME=1` for the benchmark) |
-| Wake word training | `scripts/train-wakeword.sh` |
+| Glow smoke (Xvfb). **Zach only**: the app loads whisper, Kokoro and the ONNX models | `scripts/dev.sh scripts/smoke.sh` → `out/smoke/glow.png` |
+| Pipeline test (GPU, real models). **Zach only** | `DEV_GPU=1 DEV_LLM="$HOME/Documents/Projects/AtlasOS/Telamon Gates/out/agent-models" scripts/dev.sh scripts/test-pipeline.sh` (`REALTIME=1` for the benchmark) |
+| Wake word training. **Zach only**: Kokoro generates the data | `scripts/train-wakeword.sh` |

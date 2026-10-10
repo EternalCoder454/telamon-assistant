@@ -94,7 +94,8 @@ fn watch_in(
             match usage_in(&drm) {
                 Some(pct) if pct >= cap as f64 => {
                     strikes += 1;
-                    if strikes >= STRIKES {
+                    // Not once the worker it guards has ended.
+                    if strikes >= STRIKES && !done.load(Ordering::Relaxed) {
                         trip(format!(
                             "Graphics memory reached {pct:.0} % (the cap is {cap} %), so Telamon stopped its models."
                         ));
